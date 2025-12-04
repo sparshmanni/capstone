@@ -10,7 +10,7 @@ export default function HomePage() {
     // Auto-redirect after 2 seconds
     const timer = setTimeout(() => {
       router.push("/chat");
-    }, 10);
+    }, 10000000);
 
     return () => clearTimeout(timer);
   }, [router]);

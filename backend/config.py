@@ -1,8 +1,8 @@
 import os
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 
 # Load .env variables
-load_dotenv()
+#load_dotenv()
 
 class Settings:
     PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")

@@ -9,14 +9,87 @@ from google.cloud import speech
 from pydub import AudioSegment
 import io
 
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 
-load_dotenv()
+#load_dotenv()
+
+
+
+from spell_correct import normalize_basic, correct_sentence, fix_casing_and_punctuation
+
+def refine_with_llm(text: str) -> str:
+    """
+    Use Perplexity 'sonar' once to do context-aware cleanup:
+    - fix grammar
+    - keep meaning
+    - return ONLY the cleaned question
+    """
+    try:
+        completion = client.chat.completions.create(
+            model="sonar",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a spell and grammar corrector for short student questions. "
+                        "Input may come from sign-language (ASL) alphabet recognition and "
+                        "can contain many spelling mistakes, extra characters, or missing spaces. "
+                        "Rewrite it as clear, grammatically correct English, preserving meaning. "
+                        "IMPORTANT: Return ONLY the corrected question, no explanations, "
+                        "no quotes, no extra text."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": text,
+                },
+            ],
+            max_tokens=80,
+            temperature=0.0,
+        )
+
+        corrected = completion.choices[0].message.content.strip()
+        return corrected
+    except Exception as e:
+        # If this fails, just fall back to the original text
+        print("Grammar refine failed:", e)
+        return text
+
+
+
+def prepare_user_text(raw: str) -> str:
+    """
+    Full NLP pipeline for ASL input:
+    1) normalize spaces
+    2) dictionary-based spell-correction (SymSpell)
+    3) add casing + punctuation
+    4) context-aware grammar cleanup via LLM (Perplexity)
+    """
+    # 1) normalize
+    text = normalize_basic(raw)
+
+    # 2) spell-correct word by word
+    text = correct_sentence(text)
+
+    # 3) basic casing + punctuation
+    text = fix_casing_and_punctuation(text)
+
+    # 4) context-aware grammar + wording via sonar
+    text = refine_with_llm(text)
+
+    return text
+
+
+
+
+
 
 router = APIRouter(prefix="/chatbot", tags=["Chatbot"])
 
+PERPLEXITY_API_KEY ="###"
+
 # Initialize the Perplexity client
-client = Perplexity(api_key=os.getenv("PERPLEXITY_API_KEY"))
+client = Perplexity(api_key=PERPLEXITY_API_KEY)
 
 class ChatRequest(BaseModel):
     query: str
@@ -138,7 +211,10 @@ def chatbot(request: ChatRequest, user=Depends(get_current_user), db: Session = 
         for msg in history[-10:]:  # last 10 messages
             messages.append({"role": msg.role, "content": msg.content})
 
-        messages.append({"role": "user", "content": request.query})
+        # 🔍 Run full NLP cleaning on user query (especially helpful for ASL input)
+        clean_query = prepare_user_text(request.query)
+
+        messages.append({"role": "user", "content": clean_query})
 
         # 5. Get model response
         completion = client.chat.completions.create(
@@ -151,7 +227,7 @@ def chatbot(request: ChatRequest, user=Depends(get_current_user), db: Session = 
         response_text = clean_response(completion.choices[0].message.content.strip())
 
         # 6. Save messages
-        user_msg = ChatMessage(session_id=session.id, role="user", content=request.query)
+        user_msg = ChatMessage(session_id=session.id, role="user", content=clean_query)
         assistant_msg = ChatMessage(session_id=session.id, role="assistant", content=response_text)
         db.add_all([user_msg, assistant_msg])
         db.commit()
@@ -220,9 +296,6 @@ def download_chat_session_pdf(session_id: int, user=Depends(get_current_user), d
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 
 
 

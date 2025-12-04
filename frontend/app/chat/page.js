@@ -4,10 +4,13 @@ import LeftSidebar from "@/components/LeftSidebar";
 import RightPanel from "@/components/RightPanel";
 import ChatWindow from "@/components/ChatWindow";
 import ChatInput from "@/components/ChatInput";
+import dynamic from "next/dynamic";
+const ASLInterpreter = dynamic(() => import("@/components/ASLInterpreter"), {
+  ssr: false,
+});
 import { useRouter } from "next/navigation";
 import { API_URL } from "@/lib/api";
 
-// Define the login prompt message as a constant
 const LOGIN_PROMPT_MESSAGE = {
   id: "system-login-prompt",
   role: "assistant",
@@ -22,9 +25,11 @@ export default function ChatPage() {
   const [pendingChat, setPendingChat] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
+  // NEW: text controlled at parent
+  const [text, setText] = useState("");
+
   const router = useRouter();
 
-  // This hook still runs once to set the initial state
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (token) {
@@ -64,42 +69,42 @@ export default function ChatPage() {
     }
   };
 
-  // --- (MODIFIED FUNCTION) ---
-  const sendMessage = async (text, speakResponse) => {
-    if (!text.trim()) return;
+  const sendMessage = async (textInput, speakResponse) => {
+    if (!textInput.trim()) return;
 
-    // 1. Add user's message to the state immediately
-    const userMessage = { id: Date.now(), role: "user", text };
+    const userMessage = { id: Date.now(), role: "user", text: textInput };
     setMessages((m) => [...m, userMessage]);
 
-    // 2. Check if user is logged in
+    // clear input box
+    setText("");
+
     if (!isLoggedIn) {
-      // 3. If NOT logged in, add a "login required" reply and stop
       const loginReply = {
-        id: Date.now() + 1, // Ensure unique ID
+        id: Date.now() + 1,
         role: "assistant",
         text: "Please login first to start a chat.",
       };
-      
-      // Use a short timeout to make it feel like a real reply
       setTimeout(() => {
         setMessages((m) => [...m, loginReply]);
-      }, 300); // 300ms delay
-      
-      return; // Stop the function here
+      }, 300);
+      return;
     }
 
-    // 4. If user IS logged in, proceed with the API call
     const token = localStorage.getItem("token");
     if (!token) {
-      // Safety check in case token was removed
       setIsLoggedIn(false);
-      setMessages((m) => [...m, { id: Date.now() + 1, role: 'assistant', text: 'Your session expired. Please login again.' }]);
+      setMessages((m) => [
+        ...m,
+        {
+          id: Date.now() + 1,
+          role: "assistant",
+          text: "Your session expired. Please login again.",
+        },
+      ]);
       return;
     }
 
     let sessionId = currentSessionId;
-
     try {
       const res = await fetch(`${API_URL}/chatbot/`, {
         method: "POST",
@@ -108,7 +113,7 @@ export default function ChatPage() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          query: text,
+          query: textInput,
           session_id: sessionId ? Number(sessionId) : undefined,
         }),
       });
@@ -136,17 +141,15 @@ export default function ChatPage() {
   };
 
   const handlePrepareNewChat = () => {
-    // If not logged in, just reset to the login prompt
     if (!isLoggedIn) {
       setMessages([LOGIN_PROMPT_MESSAGE]);
     } else {
-      // If logged in, clear the chat for a new session
       setMessages([
-         {
-            id: "system-welcome-new",
-            role: "assistant",
-            text: "New chat started. How can I help?",
-          }
+        {
+          id: "system-welcome-new",
+          role: "assistant",
+          text: "New chat started. How can I help?",
+        },
       ]);
     }
     setCurrentSessionId(null);
@@ -154,8 +157,35 @@ export default function ChatPage() {
     setPendingChat(true);
   };
 
+  // NEW: ASL callback → add characters to chat input
+  const handleAppendFromASL = (char) => {
+  setText((prev) => {
+    // CLEAR
+    if (char === "__CLEAR__") return "";
+
+    // BACKSPACE
+    if (char === "__BACKSPACE__") return prev.slice(0, -1);
+
+    // NORMAL APPEND
+    return prev + char;
+  });
+};
+
+const handleAutoSend = async () => {
+  if (text.trim().length === 0) return;
+
+  console.log("📤 Auto-Sending:", text);
+
+  await sendMessage(text, null);   // << FIXED
+  setText("");                     
+};
+
+
+
+
   return (
     <div className="chat-layout h-screen">
+      {/* LEFT SIDEBAR */}
       {leftOpen ? (
         <div className="sidebar-area left open top-[10px] max-h-[85vh] rounded-[20px] bg-white min-w-[240px] w-[280px] max-w-[320px]">
           <LeftSidebar
@@ -176,31 +206,41 @@ export default function ChatPage() {
         </button>
       )}
 
-      <main className="chat-main ">
+      {/* MAIN CHAT */}
+      <main className="chat-main">
         <section className="chat-section !p-0">
+
+          {/* CHAT WINDOW */}
           <div className="flex-1 overflow-y-auto bg-white p-6">
             <ChatWindow messages={messages} />
           </div>
-          {/* --- (MODIFIED BLOCK) --- */}
+
+          {/* ASL FLOATING CAMERA */}
+          <ASLInterpreter onAppendFromASL={handleAppendFromASL} 
+          onAutoSend={handleAutoSend}
+          />
+
+          {/* CHAT INPUT */}
           <div className="border-t border-gray-200 bg-white p-4">
             <ChatInput
               onSend={sendMessage}
               onOpenRight={() => setRightOpen(true)}
-              // The `disabled` prop is now REMOVED
-              // This allows logged-out users to type.
+              text={text}        // NEW
+              setText={setText}  // NEW
             />
           </div>
         </section>
       </main>
 
+      {/* RIGHT SIDEBAR */}
       {rightOpen ? (
-        <div className="sidebar-area right open max-h-[85vh]  min-w-[240px] w-[280px] max-w-[320px] top-[10px] rounded-[20px] bg-white">
+        <div className="sidebar-area right open max-h-[85vh] min-w-[240px] w-[280px] max-w-[320px] top-[10px] rounded-[20px] bg-white">
           <RightPanel open={rightOpen} onClose={() => setRightOpen(false)} />
         </div>
       ) : (
         <button
           onClick={() => setRightOpen(true)}
-          className="flex  w-[40px] flex-shrink-0 right-[10px] min-h-[35px] rounded-[10px] text-white bg-[#155DFC] items-start relative top-[20px] pt-[2px] pr-[13px] pb-0 pl-[13px] h-0 justify-center text-2xl"
+          className="flex w-[40px] flex-shrink-0 right-[10px] min-h-[35px] rounded-[10px] text-white bg-[#155DFC] items-start relative top-[20px] pt-[2px] pr-[13px] pb-0 pl-[13px] h-0 justify-center text-2xl"
         >
           ≡
         </button>
